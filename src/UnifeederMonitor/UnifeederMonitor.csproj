@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0-windows + UseWPF makes this a Windows desktop app; WinExe => no console window. -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UserSecretsId>dotnet-UnifeederMonitor-703ba32e-2d81-4426-9cbc-6f56d43feeb2</UserSecretsId>
+  </PropertyGroup>
+
+  <!-- The project used to be Microsoft.NET.Sdk.Worker, which implicitly imported these namespaces.
+       Restore them here so the existing code files don't all need explicit using directives added. -->
+  <ItemGroup>
+    <Using Include="System.Net.Http" />
+    <Using Include="System.IO" />
+    <Using Include="Microsoft.Extensions.Logging" />
+    <Using Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.3.0" />
+    <PackageReference Include="MailKit" Version="4.16.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.60.0" />
+    <!-- Serilog: structured file logging to Logs/monitor_.txt (rolling daily), replacing the console
+         output that disappeared when this became a WinExe tray app. -->
+    <PackageReference Include="Serilog" Version="4.0.0" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <!-- System.Drawing.Common is needed to read a system icon (SystemIcons.Information) for the tray.
+         Pinned to 9.0.1 to satisfy H.NotifyIcon.Wpf 2.3.0's transitive dependency. -->
+    <PackageReference Include="System.Drawing.Common" Version="9.0.1" />
+  </ItemGroup>
+
+  <!-- Bundle the custom DP World tray icon as a WPF Resource (embedded in the assembly, addressable
+       via pack URI). Renamed on disk to a simple id to keep the pack URI clean. -->
+  <ItemGroup>
+    <Resource Include="Assets\tray.ico" />
+  </ItemGroup>
+
+  <!-- Explicitly copy appsettings*.json to the output directory. The Worker SDK used to include these
+       implicitly; after switching to Microsoft.NET.Sdk that implicit inclusion was dropped, so without
+       this the host builder couldn't find the config (OptionsValidationException on startup). -->
+  <ItemGroup>
+    <Content Include="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="appsettings.Development.json" Condition="Exists('appsettings.Development.json')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>
