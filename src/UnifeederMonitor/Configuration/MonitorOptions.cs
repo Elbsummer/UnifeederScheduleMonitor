@@ -8,11 +8,14 @@ namespace UnifeederMonitor.Configuration;
 /// </summary>
 public sealed class MonitorOptions
 {
-    [Required(ErrorMessage = "Monitor:TargetUrl is required.")]
-    [Url(ErrorMessage = "Monitor:TargetUrl must be a valid absolute URL.")]
+    /// <summary>The schedule page URL. Validated by the scraper at runtime rather than at DI startup so
+    /// the app can boot with a blank config and be configured via the Settings tray UI.</summary>
+    [Url(ErrorMessage = "Monitor:TargetUrl must be a valid absolute URL when set.")]
     public string TargetUrl { get; set; } = string.Empty;
 
-    [Required(ErrorMessage = "Monitor:SearchQuery is required (e.g. the vessel name to look up).")]
+    /// <summary>The vessel name / search term to look up. Deliberately NOT [Required]: the app must start
+    /// in an idle/unconfigured state when this is empty, so the user can open the tray Settings dialog
+    /// and enter it. The Worker guards against an empty value and idles instead of scraping.</summary>
     public string SearchQuery { get; set; } = string.Empty;
 
     /// <summary>Interval between two scrape cycles. Defaults to 30 minutes.</summary>

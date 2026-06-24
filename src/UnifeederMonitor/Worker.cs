@@ -26,6 +26,10 @@ public sealed class Worker : BackgroundService
     private readonly MonitorOptions _options;
     private readonly ILogger<Worker> _logger;
 
+    /// <summary>Once-flag: 1 once the "unconfigured" warning has been logged, so an idling monitor
+    /// doesn't spam the log every tick. Reset to 0 when a vessel becomes configured.</summary>
+    private int _unconfiguredLogged;
+
     /// <summary>
     /// Volatile flag the tray app toggles. When false, the loop sleeps (cheaply, cooperatively) and
     /// skips scrape cycles until it's set true again. Marked volatile because it's written from the UI
@@ -88,7 +92,9 @@ public sealed class Worker : BackgroundService
 
     /// <summary>
     /// Runs a scrape cycle only if <see cref="IsRunning"/> is true; otherwise logs once and waits. This
-    /// is how the tray "Stop Monitor" command pauses scraping without stopping the host.
+    /// is how the tray "Stop Monitor" command pauses scraping without stopping the host. Also idles
+    /// (without scraping) when the app is unconfigured (empty SearchQuery) so the tray UI still loads
+    /// and the user can open Settings to enter a vessel.
     /// </summary>
     private async Task RunOneCycleIfRunningAsync(CancellationToken stoppingToken)
     {
@@ -97,6 +103,23 @@ public sealed class Worker : BackgroundService
             _logger.LogInformation("Monitor is paused; skipping this tick.");
             return;
         }
+
+        // Idle guard: if no vessel is configured, do NOT scrape (there's nothing to search for). Log it
+        // once (not every tick) so the file isn't spammed, then keep idling until the user configures a
+        // vessel via the tray Settings dialog.
+        if (string.IsNullOrWhiteSpace(_options.SearchQuery))
+        {
+            if (Interlocked.Exchange(ref _unconfiguredLogged, 1) == 0)
+            {
+                _logger.LogWarning(
+                    "SearchQuery is empty. The monitor is unconfigured and will idle until a vessel name " +
+                    "is entered in Settings (tray icon → ⚙️ Settings...).");
+            }
+            return;
+        }
+        // Reset the once-flag so a future blank config logs again.
+        _unconfiguredLogged = 0;
+
         await RunOneCycleAsync(stoppingToken).ConfigureAwait(false);
     }
 
