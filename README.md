@@ -36,17 +36,8 @@ timestamps, row reordering) does **not** cause false positives.
 dotnet build src/UnifeederMonitor/UnifeederMonitor.csproj
 ```
 
-## 2. Install the Playwright browser (one-time, per machine)
-
-After the first build, install the Chromium binary Playwright will drive:
-
-```bash
-# From the project directory (path to the generated playwright.ps1):
-pwsh src/UnifeederMonitor/bin/Debug/net8.0/playwright.ps1 install chromium
-```
-
-> If `pwsh` is unavailable you can also run `dotnet playwright install chromium` from inside the
-> `src/UnifeederMonitor` folder (requires the `Microsoft.Playwright` package, which is already referenced).
+## 2. Install 
+The application is configured to use the system-installed Microsoft Edge browser (Channel = "msedge"), making it completely portable with zero setup required and no heavy browser binaries to download.
 
 ## 3. Configure
 
