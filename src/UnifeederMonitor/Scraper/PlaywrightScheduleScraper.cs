@@ -195,52 +195,77 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
                 "Adjust Monitor:Selectors:VesselInputSelector in appsettings.json.", ex);
         }
 
-        // Clear any leftover value, then type slowly (150ms/keystroke). The slow per-keystroke events are
-        // what trigger the ASP.NET AJAX AutoComplete to query its suggestion service.
+        // Open the FULL option list via the dropdown arrow — the SAME mechanism the "Load Vessels" fetch
+        // uses successfully. Typing into this Softship autocomplete does NOT reliably populate
+        // #ajax_listOfOptions (the onkeyup AJAX path differs from the arrow's ForcePopup path), so we open
+        // the complete list and click the matching option instead of relying on typed filtering.
+        const string arrowSel = "img[id$='_searchByVesselAutoCompleter__textBoxArrowDown']";
         try
         {
             await input.FillAsync(string.Empty).WaitAsync(ct).ConfigureAwait(false);
-            await input.PressSequentiallyAsync(
-                _options.SearchQuery,
-                new LocatorPressSequentiallyOptions { Delay = 150, Timeout = timeoutMs })
+            await page.ClickAsync(arrowSel, new PageClickOptions { Timeout = timeoutMs })
                 .WaitAsync(ct).ConfigureAwait(false);
+            // Settle for the AJAX list to render (slow satellite links).
+            await page.WaitForTimeoutAsync(2500).WaitAsync(ct).ConfigureAwait(false);
         }
         catch (PlaywrightException ex)
         {
             throw new PlaywrightException(
-                $"Could not type vessel \"{_options.SearchQuery}\" into the input '{inputSelector}'. " +
-                "Adjust Monitor:SearchQuery or Monitor:Selectors:VesselInputSelector.", ex);
+                $"Could not open the vessel option list via the dropdown arrow ('{arrowSel}') for " +
+                $"\"{_options.SearchQuery}\". Adjust Monitor:Selectors:VesselInputSelector.", ex);
         }
 
-        // DETERMINISTIC selection: wait for the autocomplete suggestion whose visible text matches the
-        // query, then click it. No blind delays, no ArrowDown/Enter — we wait on the real DOM element so
-        // a slow AJAX response can't be missed. Filtering by text guards against a stray default item.
-        var suggestion = page.Locator(sel.AutocompleteSuggestionSelector)
-            .Filter(new LocatorFilterOptions { HasText = _options.SearchQuery })
-            .First;
-
+        // Wait for the option list to appear, then find the option whose NORMALIZED text equals the
+        // configured vessel (case-insensitive exact match, so "ELBSUMMER" never matches "ELBSUMMER X").
+        var options = page.Locator(sel.AutocompleteSuggestionSelector);
         try
         {
-            await suggestion.WaitForAsync(new LocatorWaitForOptions
+            await options.First.WaitForAsync(new LocatorWaitForOptions
             {
                 State = WaitForSelectorState.Visible,
                 Timeout = timeoutMs,
             }).WaitAsync(ct).ConfigureAwait(false);
-            await suggestion.ClickAsync().WaitAsync(ct).ConfigureAwait(false);
         }
         catch (TimeoutException ex)
         {
             throw new PlaywrightException(
-                $"Typed \"{_options.SearchQuery}\" but no matching autocomplete suggestion appeared via " +
-                $"'{sel.AutocompleteSuggestionSelector}' within {_options.TimeoutSeconds}s. The suggestion " +
-                "service may be slow, the query may not match any vessel, or the selector needs adjusting " +
+                $"Opened the vessel dropdown but no options appeared via " +
+                $"'{sel.AutocompleteSuggestionSelector}' within {_options.TimeoutSeconds}s " +
                 "(Monitor:Selectors:AutocompleteSuggestionSelector in appsettings.json).", ex);
+        }
+
+        ILocator? target = null;
+        var all = await options.AllAsync().WaitAsync(ct).ConfigureAwait(false);
+        foreach (var opt in all)
+        {
+            ct.ThrowIfCancellationRequested();
+            string text;
+            try { text = await opt.InnerTextAsync().WaitAsync(ct).ConfigureAwait(false); }
+            catch (PlaywrightException) { continue; }
+
+            if (string.Equals(Normalize(text), _options.SearchQuery, StringComparison.OrdinalIgnoreCase))
+            {
+                target = opt;
+                break;
+            }
+        }
+
+        if (target is null)
+        {
+            throw new PlaywrightException(
+                $"Vessel \"{_options.SearchQuery}\" was not found in the dropdown's {all.Count} option(s). " +
+                "Check the exact spelling in Settings (use \"Load Vessels\" to see valid names).");
+        }
+
+        try
+        {
+            await target.ScrollIntoViewIfNeededAsync().WaitAsync(ct).ConfigureAwait(false);
+            await target.ClickAsync().WaitAsync(ct).ConfigureAwait(false);
         }
         catch (PlaywrightException ex)
         {
             throw new PlaywrightException(
-                $"Found the autocomplete suggestion for \"{_options.SearchQuery}\" but failed to click it " +
-                $"via '{sel.AutocompleteSuggestionSelector}'.", ex);
+                $"Found vessel \"{_options.SearchQuery}\" in the dropdown but failed to click it.", ex);
         }
 
         // Brief pause so ASP.NET can register the internal HiddenField Vessel ID after the click, before
@@ -248,8 +273,7 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
         await Task.Delay(500, ct).ConfigureAwait(false);
 
         _logger.LogInformation(
-            "Typed vessel \"{Query}\" and clicked the matching autocomplete suggestion.",
-            _options.SearchQuery);
+            "Selected vessel \"{Query}\" from the dropdown option list.", _options.SearchQuery);
     }
 
     /// <summary>
@@ -475,18 +499,29 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
         var skippedHidden = 0;
         var skippedEmpty = 0;
 
+        // Extract each row's cells in a SINGLE JS evaluate per row. The previous approach issued one
+        // auto-waiting InnerTextAsync() per cell; when a CellSelector matched nothing, Playwright waited
+        // the full default timeout (30s) before throwing — so a few missing cells per row turned a 38-row
+        // page into a ~23-minute extraction. Querying inside the row element returns '' for missing cells
+        // instantly and avoids all per-cell IPC round-trips. Returns null for non-visible rows.
+        const string rowEvalJs = @"(el, selectors) => {
+            if (el.getClientRects().length === 0) return null;
+            return selectors.map(s => {
+                const c = el.querySelector(s);
+                return c ? (c.innerText || c.textContent || '') : '';
+            });
+        }";
+
         foreach (var rowLocator in rowLocators)
         {
             ct.ThrowIfCancellationRequested();
 
-            // Skip non-visible rows (e.g. hidden template/pager rows some ASP.NET grids render).
+            string[]? rawCells;
             try
             {
-                if (!await rowLocator.IsVisibleAsync().WaitAsync(ct).ConfigureAwait(false))
-                {
-                    skippedHidden++;
-                    continue;
-                }
+                rawCells = await rowLocator
+                    .EvaluateAsync<string[]?>(rowEvalJs, sel.CellSelectors)
+                    .WaitAsync(ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -494,22 +529,14 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
                 continue;
             }
 
-            var cells = new List<string>(sel.CellSelectors.Length);
-            foreach (var cellSelector in sel.CellSelectors)
+            // Null means the row was not visible (hidden template/pager row).
+            if (rawCells is null)
             {
-                try
-                {
-                    var text = await rowLocator.Locator(cellSelector).First
-                        .InnerTextAsync()
-                        .WaitAsync(ct).ConfigureAwait(false);
-                    cells.Add(Normalize(text));
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // A missing cell shouldn't abort the whole row; record an empty placeholder.
-                    cells.Add(string.Empty);
-                }
+                skippedHidden++;
+                continue;
             }
+
+            var cells = rawCells.Select(Normalize).ToList();
 
             // Skip entirely empty rows (they're noise, not data).
             if (cells.Any(c => !string.IsNullOrWhiteSpace(c)))

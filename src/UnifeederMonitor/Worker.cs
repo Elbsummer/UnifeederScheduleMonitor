@@ -59,6 +59,14 @@ public sealed class Worker : BackgroundService
     /// </summary>
     public void TriggerImmediateTick() => _immediateTickRequested = true;
 
+    /// <summary>
+    /// The single outstanding <see cref="PeriodicTimer.WaitForNextTickAsync"/> task. PeriodicTimer
+    /// forbids overlapping calls, so we create ONE wait and reuse it across loop iterations. It is only
+    /// replaced after it completes (a real timer tick); an immediate-tick request returns without
+    /// disturbing it, so the next iteration keeps awaiting the same pending task.
+    /// </summary>
+    private Task<bool>? _pendingTimerTask;
+
     public Worker(
         IScheduleScraper scraper,
         ChangeDetector changeDetector,
@@ -129,9 +137,11 @@ public sealed class Worker : BackgroundService
     /// </summary>
     private async Task<bool> WaitForNextTickOrTriggerAsync(PeriodicTimer timer, CancellationToken stoppingToken)
     {
-        // Create the timer wait ONCE and reuse it across the polling loop — otherwise each iteration
-        // would leak an outstanding WaitForNextTickAsync task.
-        var timerTask = timer.WaitForNextTickAsync(stoppingToken).AsTask();
+        // PeriodicTimer forbids overlapping WaitForNextTickAsync calls. Reuse a SINGLE pending wait that
+        // persists across calls: only create a new one when none is outstanding (i.e. after a prior real
+        // tick completed it). An immediate-tick request returns WITHOUT touching this task, so the pending
+        // wait survives and is awaited again next time — never two concurrent waits (the prior crash).
+        _pendingTimerTask ??= timer.WaitForNextTickAsync(stoppingToken).AsTask();
 
         while (true)
         {
@@ -140,19 +150,22 @@ public sealed class Worker : BackgroundService
             if (_immediateTickRequested)
             {
                 _immediateTickRequested = false; // consume the request
-                return true;                     // loop will run a cycle on the next iteration
+                return true;                     // _pendingTimerTask intentionally left outstanding
             }
 
             // Cooperative wait: poll the timer + the trigger on a short cadence so a pause toggle or an
             // immediate-tick request is noticed within ~1s instead of blocking until the full interval.
             var winner = await Task.WhenAny(
-                timerTask,
+                _pendingTimerTask,
                 Task.Delay(TimeSpan.FromSeconds(1), stoppingToken)).ConfigureAwait(false);
 
             if (winner.IsCanceled) throw new OperationCanceledException(stoppingToken);
-            if (ReferenceEquals(winner, timerTask))
+            if (ReferenceEquals(winner, _pendingTimerTask))
             {
-                return true; // natural timer tick
+                // Real tick consumed: clear it so a fresh wait is created on the next call.
+                var result = await _pendingTimerTask.ConfigureAwait(false);
+                _pendingTimerTask = null;
+                return result;
             }
             // else: the 1s delay elapsed — loop and re-check the immediate-tick / pause flags.
         }
