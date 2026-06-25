@@ -27,6 +27,10 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
     private readonly SemaphoreSlim _initGate = new(1, 1);
     private bool _disposed;
 
+    /// <summary>Navigation tab labels that must never be treated as vessel names (case-insensitive).</summary>
+    private static readonly HashSet<string> _navTabExclusions =
+        new(StringComparer.OrdinalIgnoreCase) { "Master Schedule", "Port", "Vessel" };
+
     public PlaywrightScheduleScraper(
         IOptions<MonitorOptions> options,
         ILogger<PlaywrightScheduleScraper> logger)
@@ -696,8 +700,12 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
             // click the adjacent dropdown arrow to trigger the AJAX list load, then wait for the rendered
             // suggestion items. Fall back to typing a space to coax the autocomplete into rendering.
             var timeoutMs = (int)TimeSpan.FromSeconds(_options.TimeoutSeconds).TotalMilliseconds;
-            const string inputSel = "input[placeholder='Vessel*']";
-            const string arrowSel = "img.autoCompleteArrowDown";
+            // Scope to the VESSEL control by its stable ASP.NET id suffix. There are several
+            // 'img.autoCompleteArrowDown' on the page (Voyage-Vessel, Voyage-No, Vessel, TradeLane); the
+            // generic class selector clicks the first (a hidden Voyage-tab arrow), so the vessel popup
+            // never opens. The id suffixes survive WebForms ClientID churn.
+            const string inputSel = "input[id$='_searchByVesselAutoCompleter__textBox']";
+            const string arrowSel = "img[id$='_searchByVesselAutoCompleter__textBoxArrowDown']";
 
             await page.WaitForSelectorAsync(inputSel, new PageWaitForSelectorOptions
             {
@@ -706,30 +714,16 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
             }).WaitAsync(ct).ConfigureAwait(false);
 
             var itemLocator = page.Locator(sel.AutocompleteSuggestionSelector);
-            try
+            // Click the vessel arrow to trigger the AJAX list, then wait for the option items to render.
+            await page.ClickAsync(arrowSel, new PageClickOptions { Timeout = timeoutMs })
+                .WaitAsync(ct).ConfigureAwait(false);
+            // Short settle for the AJAX call (slow satellite links), then wait for the first option item.
+            await page.WaitForTimeoutAsync(2500).WaitAsync(ct).ConfigureAwait(false);
+            await itemLocator.First.WaitForAsync(new LocatorWaitForOptions
             {
-                await page.ClickAsync(arrowSel, new PageClickOptions { Timeout = timeoutMs })
-                    .WaitAsync(ct).ConfigureAwait(false);
-                await itemLocator.First.WaitForAsync(new LocatorWaitForOptions
-                {
-                    State = WaitForSelectorState.Visible,
-                    Timeout = timeoutMs,
-                }).WaitAsync(ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // Fallback: type a space so the autocomplete JS renders the list.
-                _logger.LogDebug(ex, "Arrow-click did not surface the list; falling back to typing a space.");
-                await page.FillAsync(inputSel, " ").WaitAsync(ct).ConfigureAwait(false);
-                await page.Locator(inputSel).PressSequentiallyAsync(
-                    " ", new LocatorPressSequentiallyOptions { Delay = 150, Timeout = timeoutMs })
-                    .WaitAsync(ct).ConfigureAwait(false);
-                await itemLocator.First.WaitForAsync(new LocatorWaitForOptions
-                {
-                    State = WaitForSelectorState.Visible,
-                    Timeout = timeoutMs,
-                }).WaitAsync(ct).ConfigureAwait(false);
-            }
+                State = WaitForSelectorState.Visible,
+                Timeout = timeoutMs,
+            }).WaitAsync(ct).ConfigureAwait(false);
 
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var optionLocators = await itemLocator.AllAsync().WaitAsync(ct).ConfigureAwait(false);
@@ -748,10 +742,10 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
                 }
 
                 var normalized = Normalize(text);
-                if (!string.IsNullOrWhiteSpace(normalized))
-                {
-                    names.Add(normalized);
-                }
+                // Guard: skip empties and the page's navigation tab labels that can leak into the list.
+                if (string.IsNullOrWhiteSpace(normalized)) continue;
+                if (_navTabExclusions.Contains(normalized)) continue;
+                names.Add(normalized);
             }
 
             var result = names

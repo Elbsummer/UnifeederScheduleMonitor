@@ -44,9 +44,11 @@ public partial class SettingsWindow : Window
         // Seed the strict combo with the currently-saved vessel (if any) so Save works without forcing a
         // fetch, and so the existing value is shown selected when the dialog opens. The list is replaced
         // wholesale by "Load Vessels".
+        // Seed via ItemsSource (NOT Items.Add) — WPF forbids setting ItemsSource later if the Items
+        // collection was populated directly ("Items collection must be empty before using ItemsSource").
         if (!string.IsNullOrWhiteSpace(_originalVessel))
         {
-            VesselCombo.Items.Add(_originalVessel);
+            VesselCombo.ItemsSource = new List<string> { _originalVessel };
             VesselCombo.SelectedItem = _originalVessel;
         }
 
@@ -92,15 +94,16 @@ public partial class SettingsWindow : Window
                     "selector (Monitor:Selectors:VesselListSelector) in appsettings.json.",
                     "Load Vessels", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
-            else if (!string.IsNullOrWhiteSpace(previousSelection))
+            else
             {
-                // Re-select the saved vessel if it still exists in the freshly-loaded list.
-                var match = vessels.FirstOrDefault(v =>
-                    string.Equals(v, previousSelection, StringComparison.OrdinalIgnoreCase));
-                if (match is not null)
-                {
-                    VesselCombo.SelectedItem = match;
-                }
+                // Re-select the saved vessel if it still exists in the freshly-loaded list; otherwise
+                // select the first (top) item so the combo isn't blank — a clear visual sign to the
+                // operator that the load completed successfully and a valid vessel is ready to save.
+                var match = string.IsNullOrWhiteSpace(previousSelection)
+                    ? null
+                    : vessels.FirstOrDefault(v =>
+                        string.Equals(v, previousSelection, StringComparison.OrdinalIgnoreCase));
+                VesselCombo.SelectedItem = match ?? vessels[0];
             }
         }
         catch (Exception ex)

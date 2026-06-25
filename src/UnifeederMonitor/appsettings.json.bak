@@ -41,10 +41,10 @@
       // Resilient selector for the vessel <input type="text"> autocomplete field: attribute-ends-with
       // match on the stable ID suffix.
       "VesselInputSelector": "input[id$='_searchByVesselAutoCompleter__textBox']",
-      // Selector for the autocomplete suggestion/option list items. Softship's custom autocompleter renders
-      // the open list as #ajax_listOfOptions with one div.optionDiv per vessel (plus a .autocompleteHeader
-      // "Vessel name" row, which .optionDiv excludes). Override here if the page layout changes.
-      "AutocompleteSuggestionSelector": "#ajax_listOfOptions div.optionDiv",
+      // Selector for the autocomplete suggestion list items. The scraper types the query, waits for a
+      // suggestion whose text matches, then clicks it (no blind keyboard keys). ASP.NET AutoCompleteExtender
+      // commonly renders <li> or .ajax__autocomplete_item; override here if the page uses a different class.
+      "AutocompleteSuggestionSelector": "li, .ajax__autocomplete_item",
       // Selector for the "Show terminal information" checkbox, scoped under the active #searchByVesselTab
       // so it matches exactly one element and never the duplicate on the hidden Port tab. The <input> is
       // visually hidden by the site (custom styling), so the scraper uses Force=true to check it.

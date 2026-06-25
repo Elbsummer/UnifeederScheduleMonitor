@@ -101,11 +101,12 @@ public sealed class SelectorsOptions
     /// <summary>
     /// Selector for the autocomplete suggestion list items. The scraper types the query, waits for a
     /// suggestion item whose text matches the query, and clicks it (rather than blind keyboard keys).
-    /// ASP.NET AutoCompleteExtender commonly renders suggestions as <c>&lt;li&gt;</c> or
-    /// <c>.ajax__autocomplete_item</c> elements; this comma list covers both, and is overridable if the
-    /// page uses a different class. The scraper further filters by visible text = the search query.
+    /// Softship's custom autocompleter renders the open list as
+    /// <c>#ajax_listOfOptions</c> with one <c>div.optionDiv</c> per vessel (plus a
+    /// <c>.autocompleteHeader</c> "Vessel name" row, which <c>.optionDiv</c> deliberately excludes).
+    /// Overridable if the page layout changes. The scraper normalizes/de-duplicates the item text.
     /// </summary>
-    public string AutocompleteSuggestionSelector { get; set; } = "li, .ajax__autocomplete_item";
+    public string AutocompleteSuggestionSelector { get; set; } = "#ajax_listOfOptions div.optionDiv";
 
     /// <summary>
     /// Selector for the "Show terminal information" checkbox that must be ticked before submitting the
