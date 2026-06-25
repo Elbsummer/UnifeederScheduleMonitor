@@ -692,9 +692,47 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
                 _logger.LogDebug(ex, "Vessel tab activation failed during vessel-list fetch; continuing anyway.");
             }
 
+            // The vessel filter is a custom ASP.NET AJAX autocomplete, NOT a <select>. Wait for the input,
+            // click the adjacent dropdown arrow to trigger the AJAX list load, then wait for the rendered
+            // suggestion items. Fall back to typing a space to coax the autocomplete into rendering.
+            var timeoutMs = (int)TimeSpan.FromSeconds(_options.TimeoutSeconds).TotalMilliseconds;
+            const string inputSel = "input[placeholder='Vessel*']";
+            const string arrowSel = "img.autoCompleteArrowDown";
+
+            await page.WaitForSelectorAsync(inputSel, new PageWaitForSelectorOptions
+            {
+                State = WaitForSelectorState.Visible,
+                Timeout = timeoutMs,
+            }).WaitAsync(ct).ConfigureAwait(false);
+
+            var itemLocator = page.Locator(sel.AutocompleteSuggestionSelector);
+            try
+            {
+                await page.ClickAsync(arrowSel, new PageClickOptions { Timeout = timeoutMs })
+                    .WaitAsync(ct).ConfigureAwait(false);
+                await itemLocator.First.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = timeoutMs,
+                }).WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Fallback: type a space so the autocomplete JS renders the list.
+                _logger.LogDebug(ex, "Arrow-click did not surface the list; falling back to typing a space.");
+                await page.FillAsync(inputSel, " ").WaitAsync(ct).ConfigureAwait(false);
+                await page.Locator(inputSel).PressSequentiallyAsync(
+                    " ", new LocatorPressSequentiallyOptions { Delay = 150, Timeout = timeoutMs })
+                    .WaitAsync(ct).ConfigureAwait(false);
+                await itemLocator.First.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = timeoutMs,
+                }).WaitAsync(ct).ConfigureAwait(false);
+            }
+
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var optionLocators = await page.Locator(sel.VesselListSelector)
-                .AllAsync().WaitAsync(ct).ConfigureAwait(false);
+            var optionLocators = await itemLocator.AllAsync().WaitAsync(ct).ConfigureAwait(false);
 
             foreach (var loc in optionLocators)
             {
@@ -721,7 +759,7 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
                 .ToList();
 
             _logger.LogInformation(
-                "Fetched {Count} unique vessel name(s) via '{Selector}'.", result.Count, sel.VesselListSelector);
+                "Fetched {Count} unique vessel name(s) via '{Selector}'.", result.Count, sel.AutocompleteSuggestionSelector);
             return result;
         }
         finally
