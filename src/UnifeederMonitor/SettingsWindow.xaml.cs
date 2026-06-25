@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Controls;
+using UnifeederMonitor.Scraper;
 
 namespace UnifeederMonitor;
 
@@ -20,31 +22,117 @@ public partial class SettingsWindow : Window
     /// </summary>
     private readonly string _originalVessel;
 
-    public SettingsWindow(string vessel, string senderEmail, string senderPassword, string recipientEmail)
+    /// <summary>DI scraper used to fetch the live vessel list from the target page.</summary>
+    private readonly IScheduleScraper _scraper;
+
+    public SettingsWindow(
+        IScheduleScraper scraper,
+        string vessel,
+        string senderEmail,
+        string senderPassword,
+        string recipientEmail)
     {
         InitializeComponent();
 
-        VesselBox.Text = vessel;
+        _scraper = scraper;
+        _originalVessel = vessel ?? string.Empty;
+
         SenderEmailBox.Text = senderEmail;
         SenderPasswordBox.Password = senderPassword;
         RecipientEmailBox.Text = recipientEmail;
-        _originalVessel = vessel ?? string.Empty;
+
+        // Seed the strict combo with the currently-saved vessel (if any) so Save works without forcing a
+        // fetch, and so the existing value is shown selected when the dialog opens. The list is replaced
+        // wholesale by "Load Vessels".
+        if (!string.IsNullOrWhiteSpace(_originalVessel))
+        {
+            VesselCombo.Items.Add(_originalVessel);
+            VesselCombo.SelectedItem = _originalVessel;
+        }
+
+        UpdateSaveState();
+    }
+
+    /// <summary>Enables Save only when a non-empty vessel is selected in the strict combo.</summary>
+    private void UpdateSaveState()
+    {
+        var selected = VesselCombo.SelectedItem as string;
+        SaveButton.IsEnabled = !string.IsNullOrWhiteSpace(selected);
+    }
+
+    private void VesselCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => UpdateSaveState();
+
+    /// <summary>
+    /// Fetches the live vessel list via the DI scraper on a background thread, keeping the UI responsive.
+    /// Disables Save/Load and shows the progress indicator during the fetch, restores state afterward,
+    /// and re-selects the previously-saved vessel if it's present in the loaded list.
+    /// </summary>
+    private async void LoadVessels_Click(object sender, RoutedEventArgs e)
+    {
+        // Enter "loading" UI state.
+        LoadingPanel.Visibility = Visibility.Visible;
+        LoadVesselsButton.IsEnabled = false;
+        SaveButton.IsEnabled = false;
+        VesselCombo.IsEnabled = false;
+
+        // Remember the current selection so we can restore/re-select it after the list is replaced.
+        var previousSelection = (VesselCombo.SelectedItem as string) ?? _originalVessel;
+
+        try
+        {
+            var vessels = await _scraper.GetAvailableVesselsAsync().ConfigureAwait(true);
+
+            VesselCombo.ItemsSource = vessels;
+
+            if (vessels.Count == 0)
+            {
+                MessageBox.Show(this,
+                    "No vessels were found on the target page. Verify the Target URL and the vessel-list " +
+                    "selector (Monitor:Selectors:VesselListSelector) in appsettings.json.",
+                    "Load Vessels", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            else if (!string.IsNullOrWhiteSpace(previousSelection))
+            {
+                // Re-select the saved vessel if it still exists in the freshly-loaded list.
+                var match = vessels.FirstOrDefault(v =>
+                    string.Equals(v, previousSelection, StringComparison.OrdinalIgnoreCase));
+                if (match is not null)
+                {
+                    VesselCombo.SelectedItem = match;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"Failed to load the vessel list:\n\n{ex.Message}",
+                "Load Vessels", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            // Restore normal UI state regardless of success/failure.
+            LoadingPanel.Visibility = Visibility.Collapsed;
+            LoadVesselsButton.IsEnabled = true;
+            VesselCombo.IsEnabled = true;
+            UpdateSaveState();
+        }
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        var vessel = VesselBox.Text?.Trim() ?? string.Empty;
+        var vessel = (VesselCombo.SelectedItem as string)?.Trim() ?? string.Empty;
         var senderEmail = SenderEmailBox.Text?.Trim() ?? string.Empty;
         var senderPassword = SenderPasswordBox.Password?.Trim() ?? string.Empty;
         var recipientEmail = RecipientEmailBox.Text?.Trim() ?? string.Empty;
 
-        // Basic validation. Empty vessel is fatal (nothing to search for); empty email fields just
-        // disable that channel (the EmailAlertService self-disables on incomplete config), but we warn
-        // so the user doesn't silently lose alerts.
+        // Strict validation: a vessel must be selected from the dropdown (manual entry is disabled).
         if (string.IsNullOrWhiteSpace(vessel))
         {
-            MessageBox.Show(this, "Vessel name is required.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
-            VesselBox.Focus();
+            MessageBox.Show(this,
+                "Please select a vessel from the list. Use \"Load Vessels\" to populate it.",
+                "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            VesselCombo.Focus();
             return;
         }
 

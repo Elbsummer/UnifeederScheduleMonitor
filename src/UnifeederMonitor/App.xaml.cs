@@ -144,7 +144,9 @@ public partial class App : Application
             return;
         }
 
+        var scraper = _host!.Services.GetRequiredService<IScheduleScraper>();
         var dialog = new SettingsWindow(
+            scraper,
             opts.SearchQuery,
             opts.Email.SenderEmail ?? string.Empty,
             opts.Email.SenderAppPassword ?? string.Empty,

@@ -91,6 +91,14 @@ public sealed class SelectorsOptions
     public string VesselInputSelector { get; set; } = "input[id$='_searchByVesselAutoCompleter__textBox']";
 
     /// <summary>
+    /// Selector used by the Settings "Load Vessels" feature to enumerate selectable vessel names from the
+    /// page (the vessel dropdown/filter). Defaults to the &lt;option&gt; elements of any &lt;select&gt; on
+    /// the page; override if the target renders its vessel list differently. The fetcher normalizes,
+    /// de-duplicates, and sorts whatever text these elements contain.
+    /// </summary>
+    public string VesselListSelector { get; set; } = "select option";
+
+    /// <summary>
     /// Selector for the autocomplete suggestion list items. The scraper types the query, waits for a
     /// suggestion item whose text matches the query, and clicks it (rather than blind keyboard keys).
     /// ASP.NET AutoCompleteExtender commonly renders suggestions as <c>&lt;li&gt;</c> or

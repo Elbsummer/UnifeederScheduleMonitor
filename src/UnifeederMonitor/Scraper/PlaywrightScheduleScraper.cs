@@ -609,20 +609,7 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
 
             _playwright = await Playwright.CreateAsync().WaitAsync(ct).ConfigureAwait(false);
 
-            var launchOptions = new BrowserTypeLaunchOptions
-            {
-                Headless = _options.BrowserHeadless && !_options.HeadedDebug,
-                // Drive the system-installed Microsoft Edge instead of the Playwright-managed Chromium
-                // build. This makes the deployment self-contained — no `playwright install` step, no
-                // 150 MB Chromium download (painful over maritime satellite/eSIM links). Edge is present
-                // on every stock Windows install. An explicit BrowserExecutablePath, if configured,
-                // still wins (below) so a custom browser can be pinned.
-                Channel = "msedge",
-            };
-            if (!string.IsNullOrWhiteSpace(_options.BrowserExecutablePath))
-            {
-                launchOptions.ExecutablePath = _options.BrowserExecutablePath;
-            }
+            var launchOptions = BuildLaunchOptions(_options.BrowserHeadless && !_options.HeadedDebug);
 
             _browser = await _playwright.Chromium.LaunchAsync(launchOptions).WaitAsync(ct).ConfigureAwait(false);
             _logger.LogInformation(
@@ -632,6 +619,120 @@ public sealed class PlaywrightScheduleScraper : IScheduleScraper
         finally
         {
             _initGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Builds the standard browser launch options (system Edge channel, optional pinned executable path)
+    /// so both the long-lived scrape browser and the short-lived vessel-list browser share one config.
+    /// </summary>
+    private BrowserTypeLaunchOptions BuildLaunchOptions(bool headless)
+    {
+        var launchOptions = new BrowserTypeLaunchOptions
+        {
+            Headless = headless,
+            // Drive the system-installed Microsoft Edge instead of the Playwright-managed Chromium
+            // build. This makes the deployment self-contained — no `playwright install` step, no
+            // 150 MB Chromium download (painful over maritime satellite/eSIM links). Edge is present
+            // on every stock Windows install. An explicit BrowserExecutablePath, if configured,
+            // still wins (below) so a custom browser can be pinned.
+            Channel = "msedge",
+        };
+        if (!string.IsNullOrWhiteSpace(_options.BrowserExecutablePath))
+        {
+            launchOptions.ExecutablePath = _options.BrowserExecutablePath;
+        }
+        return launchOptions;
+    }
+
+    /// <summary>
+    /// Launches a dedicated, short-lived headless browser, navigates to the schedule page, activates the
+    /// Vessel tab, and enumerates the selectable vessel names via
+    /// <see cref="SelectorsOptions.VesselListSelector"/>. The browser is always closed/disposed in the
+    /// finally block — independent of the reused scrape browser — so this can be called from the tray
+    /// Settings UI without disturbing the background worker.
+    /// </summary>
+    public async Task<List<string>> GetAvailableVesselsAsync(CancellationToken ct = default)
+    {
+        IPlaywright? playwright = null;
+        IBrowser? browser = null;
+        try
+        {
+            playwright = await Playwright.CreateAsync().WaitAsync(ct).ConfigureAwait(false);
+            // Always headless for this background fetch, regardless of HeadedDebug.
+            browser = await playwright.Chromium
+                .LaunchAsync(BuildLaunchOptions(headless: true))
+                .WaitAsync(ct).ConfigureAwait(false);
+
+            await using var context = await browser.NewContextAsync().ConfigureAwait(false);
+            var page = await context.NewPageAsync().ConfigureAwait(false);
+            page.SetDefaultTimeout(_options.TimeoutSeconds * 1000f);
+            page.SetDefaultNavigationTimeout(_options.TimeoutSeconds * 1000f);
+
+            var sel = _options.Selectors;
+
+            _logger.LogInformation("Fetching available vessels from {Url}", _options.TargetUrl);
+            await page.GotoAsync(
+                _options.TargetUrl,
+                new PageGotoOptions
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = 60_000,
+                })
+                .WaitAsync(ct).ConfigureAwait(false);
+
+            // Best-effort: the vessel list/dropdown often lives on the Vessel tab. Activate it if we can,
+            // but don't fail the whole fetch if the page exposes the list without tab activation.
+            try
+            {
+                await ActivateVesselTabAsync(page, sel, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Vessel tab activation failed during vessel-list fetch; continuing anyway.");
+            }
+
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var optionLocators = await page.Locator(sel.VesselListSelector)
+                .AllAsync().WaitAsync(ct).ConfigureAwait(false);
+
+            foreach (var loc in optionLocators)
+            {
+                ct.ThrowIfCancellationRequested();
+                string text;
+                try
+                {
+                    text = await loc.InnerTextAsync().WaitAsync(ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    continue;
+                }
+
+                var normalized = Normalize(text);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                {
+                    names.Add(normalized);
+                }
+            }
+
+            var result = names
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            _logger.LogInformation(
+                "Fetched {Count} unique vessel name(s) via '{Selector}'.", result.Count, sel.VesselListSelector);
+            return result;
+        }
+        finally
+        {
+            // Close + dispose the dedicated browser immediately, regardless of success/failure.
+            if (browser is not null)
+            {
+                try { await browser.CloseAsync().ConfigureAwait(false); } catch { }
+                try { await browser.DisposeAsync().ConfigureAwait(false); } catch { }
+            }
+            playwright?.Dispose();
         }
     }
 
